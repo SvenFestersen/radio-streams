@@ -1,0 +1,20 @@
+import argparse
+import logging
+
+from radiostreams.streamingproxy import run_server
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Audio Streaming Proxy")
+    parser.add_argument("streamlist", type=str, help="Stream list filename")
+    parser.add_argument("-v", action="store_true", help="Increase verbosity")
+    parser.add_argument("--port", type=int, help="Server port", default=8080)
+    return parser
+
+
+if __name__ == "__main__":
+    args = build_parser().parse_args()
+    if args.v:
+        logging.getLogger("RadioStreamHandler").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("RadioStreamHandler").setLevel(logging.INFO)
+    run_server(args.streamlist, port=args.port)
