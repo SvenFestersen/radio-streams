@@ -25,14 +25,6 @@ class RadioStreamHandler(tornado.web.RequestHandler):
     def initialize(self, streams={}):
         self.streams = streams
 
-    @tornado.gen.coroutine
-    def get_stream_headers(self, stream_url):
-        client = tornado.httpclient.AsyncHTTPClient()
-        request = tornado.httpclient.HTTPRequest(stream_url, method="HEAD",
-                                                 headers={"icy-metadata": "1"})
-        response = yield client.fetch(request)
-        return response.headers
-
     @tornado.web.asynchronous
     @tornado.gen.coroutine
     def get(self, stream_name):
@@ -48,23 +40,32 @@ class RadioStreamHandler(tornado.web.RequestHandler):
             return
         stream_url = self.streams[stream_name]
 
-        # get stream headers to proxy them
-        all_stream_headers = yield self.get_stream_headers(stream_url)
-        filtered_headers = filter(lambda x: x.lower().startswith("icy"),
-                                  all_stream_headers)
-        stream_headers = {header: all_stream_headers[header] for header
-                          in filtered_headers}
-        for header in stream_headers:
-            value = stream_headers[header]
-            logger.debug("Stream header: '{0}: {1}'".format(header, value))
-            self.set_header(header, value)
+        # build headers to send to server
+        icy_headers = {}
+        for header in self.request.headers:
+            if header.lower().startswith("icy"):
+                icy_headers[header] = self.request.headers[header]
+                logger.debug("Additional header: '{0}: {1}'".format(header, icy_headers[header]))
 
-        logger.debug("Starting stream...")
-        # connect to stream and proxy data to client
+        # prepare client
         client = tornado.httpclient.AsyncHTTPClient()
+
+        # resolve redirects
+        request = tornado.httpclient.HTTPRequest(stream_url, method="HEAD",
+                                                 headers=icy_headers,
+                                                 request_timeout=0)
+        response = yield client.fetch(request)
+        if response.effective_url != stream_url:
+            logger.debug("Redirected. New URL: {}".format(response.effective_url))
+
+        stream_url = response.effective_url
+
+        # connect to stream and proxy data to client
+        logger.debug("Starting stream...")
         request = tornado.httpclient.HTTPRequest(stream_url,
                                                  headers={"icy-metadata": "1"},
                                                  streaming_callback=self.stream_callback,
+                                                 header_callback=self.header_callback,
                                                  request_timeout=0)
         yield client.fetch(request, self.async_callback)
 
@@ -75,10 +76,17 @@ class RadioStreamHandler(tornado.web.RequestHandler):
         self.write(chunk)
         self.flush()
 
+    def header_callback(self, header_line):
+        d = header_line.strip().split(":", 1)
+        if len(d) == 2 and (d[0].lower().startswith("icy")
+                            or d[0].lower().startswith("content")):
+            self.set_header(d[0], d[1].strip())
+
 
 def run_server(filename, port=8080):
     application = tornado.web.Application([
-        (r"/radio/(.*?).mp3", RadioStreamHandler, dict(streams=load_streams(filename)))
+        (r"/radio/(.*?).mp3", RadioStreamHandler,
+         dict(streams=load_streams(filename)))
         ])
     application.listen(port)
     tornado.ioloop.IOLoop.current().start()
